@@ -322,5 +322,7 @@ See the `LICENSE` file for details.
 If you find this project useful, consider:
 
 ⭐ Starring the repository
+
 🐛 Reporting issues
+
 🔧 Contributing improvements

@@ -1,0 +1,175 @@
+#!/bin/sh
+
+###############################################################################
+# Portable IP Detection Tool
+# POSIX compliant
+# Linux / BSD / macOS compatible
+###############################################################################
+
+JSON=0
+SHOW_LOCAL=1
+SHOW_PUBLIC=1
+
+usage() {
+    echo "Usage: $0 [-l] [-p] [-j]"
+    echo "  -l   only local IP"
+    echo "  -p   only public IP"
+    echo "  -j   JSON output"
+    exit 0
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -l) SHOW_PUBLIC=0 ;;
+        -p) SHOW_LOCAL=0 ;;
+        -j) JSON=1 ;;
+        -h|--help) usage ;;
+        *) usage ;;
+    esac
+    shift
+done
+
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+###############################################################################
+# PUBLIC IPv4 FAILOVER
+###############################################################################
+
+PUBLIC_SERVICES="
+https://icanhazip.com/
+https://api.ipify.org/
+https://whatismyip.akamai.com/
+https://checkip.amazonaws.com/
+https://ipinfo.io/ip
+"
+
+fetch_url() {
+    URL="$1"
+
+    if command_exists curl; then
+        curl -4 -fsS --max-time 4 "$URL" 2>/dev/null
+        return
+    fi
+
+    if command_exists wget; then
+        wget -4 -qO- --timeout=4 "$URL" 2>/dev/null
+        return
+    fi
+
+    if command_exists fetch; then
+        fetch -4 -qo - "$URL" 2>/dev/null
+        return
+    fi
+
+    echo ""
+}
+
+is_valid_ipv4() {
+    echo "$1" | awk '
+    BEGIN{FS="."}
+    NF==4 &&
+    $1>=0 && $1<=255 &&
+    $2>=0 && $2<=255 &&
+    $3>=0 && $3<=255 &&
+    $4>=0 && $4<=255 {print "yes"}'
+}
+
+get_public_ipv4() {
+    for URL in $PUBLIC_SERVICES; do
+        IP=$(fetch_url "$URL" | tr -d ' \n\r')
+        if [ -n "$IP" ] && [ "$(is_valid_ipv4 "$IP")" = "yes" ]; then
+            echo "$IP"
+            return
+        fi
+    done
+    echo ""
+}
+
+###############################################################################
+# LOCAL IP (VM safe routing method)
+###############################################################################
+
+LOCAL_TARGETS="8.8.8.8 1.1.1.1"
+
+get_local_ipv4_linux() {
+    TARGET="$1"
+    ip route get "$TARGET" 2>/dev/null | awk '
+    /src/ {
+        for(i=1;i<=NF;i++)
+            if($i=="src")
+                print $(i+1)
+    }'
+}
+
+get_local_ipv4_bsd() {
+    TARGET="$1"
+    IFACE=$(route -n get "$TARGET" 2>/dev/null | awk '/interface:/ {print $2}')
+    if [ -n "$IFACE" ] && command_exists ifconfig; then
+        ifconfig "$IFACE" 2>/dev/null | awk '/inet / {print $2; exit}'
+    fi
+}
+
+get_local_ipv4() {
+
+    for TARGET in $LOCAL_TARGETS; do
+
+        if command_exists ip; then
+            IP=$(get_local_ipv4_linux "$TARGET")
+            if [ -n "$IP" ] && [ "$(is_valid_ipv4 "$IP")" = "yes" ]; then
+                echo "$IP"
+                return
+            fi
+        fi
+
+        if command_exists route; then
+            IP=$(get_local_ipv4_bsd "$TARGET")
+            if [ -n "$IP" ] && [ "$(is_valid_ipv4 "$IP")" = "yes" ]; then
+                echo "$IP"
+                return
+            fi
+        fi
+
+    done
+
+    echo ""
+}
+
+###############################################################################
+# MAIN
+###############################################################################
+
+PUBLIC_IP=""
+LOCAL_IP=""
+
+[ "$SHOW_PUBLIC" -eq 1 ] && PUBLIC_IP=$(get_public_ipv4)
+[ "$SHOW_LOCAL" -eq 1 ] && LOCAL_IP=$(get_local_ipv4)
+
+[ -z "$PUBLIC_IP" ] && PUBLIC_IP="0.0.0.0"
+[ -z "$LOCAL_IP" ] && LOCAL_IP="0.0.0.0"
+
+###############################################################################
+# OUTPUT
+###############################################################################
+
+if [ "$JSON" -eq 1 ]; then
+    printf "{"
+    FIRST=1
+
+    if [ "$SHOW_PUBLIC" -eq 1 ]; then
+        printf '"public_ipv4":"%s"' "$PUBLIC_IP"
+        FIRST=0
+    fi
+
+    if [ "$SHOW_LOCAL" -eq 1 ]; then
+        [ "$FIRST" -eq 0 ] && printf ","
+        printf '"local_ipv4":"%s"' "$LOCAL_IP"
+        FIRST=0
+    fi
+
+    printf "}\n"
+else
+    [ "$SHOW_PUBLIC" -eq 1 ] && echo "Public IPv4 : $PUBLIC_IP"
+    [ "$SHOW_LOCAL" -eq 1 ] && echo "Local  IPv4 : $LOCAL_IP"
+fi
